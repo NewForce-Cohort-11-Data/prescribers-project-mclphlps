@@ -117,8 +117,22 @@ SELECT
 FROM prescription
 RIGHT JOIN prescriber USING(npi)
 GROUP BY specialty_description
-ORDER BY total_num_claims DESC, specialty_description;
--- -- -- ANSWER
+HAVING SUM(total_claim_count) IS NULL;
+
+-- Using EXCEPT
+SELECT
+  specialty_description
+FROM
+  prescriber
+EXCEPT
+SELECT
+  p.specialty_description
+FROM
+  prescriber AS p
+  JOIN prescription AS rx USING (npi);
+
+
+-- -- -- ANSWER:
 /*
 "specialty_description"	"total_num_claims"
 "Ambulatory Surgical Center"	
@@ -139,13 +153,46 @@ ORDER BY total_num_claims DESC, specialty_description;
 */
 
 -- -- -- 2d. DIFFICULT BONUS: DO NOT ATTEMPT UNTIL YOU HAVE SOLVED ALL OTHER PROBLEMS! For each specialty, report the percentage of total claims by that specialty which are for opioids. Which specialties have a high percentage of opioids?
+SELECT
+	specialty_description,
+	ROUND((SUM(CASE WHEN opioid_drug_flag = 'Y'
+		THEN total_claim_count
+		END) /
+	SUM(total_claim_count)), 2) * 100 AS percent_opioid
+FROM prescriber
+LEFT JOIN prescription USING(npi)
+LEFT JOIN drug USING(drug_name)
+GROUP BY specialty_description
+ORDER BY percent_opioid DESC NULLS LAST;
 
--- -- -- ANSWER
+--Using CTE
+WITH claims AS (
+	SELECT
+		specialty_description,
+		COALESCE(SUM(CASE WHEN opioid_drug_flag = 'Y' THEN total_claim_count END), 0) AS opioid_claims,
+		COALESCE(SUM(total_claim_count), 0) AS total_claims
+	FROM prescriber
+	LEFT JOIN prescription
+		USING(npi)
+	LEFT JOIN drug
+		USING(drug_name)
+	GROUP BY specialty_description
+)
+SELECT 
+	specialty_description,
+	CASE
+		WHEN total_claims = 0 THEN 0
+		ELSE ROUND(((opioid_claims / total_claims)*100), 2)
+	END AS opioid_percentage
+FROM claims
+ORDER BY opioid_percentage DESC;
+
+-- -- -- ANSWER: execute query above
 
 -- -- -- 3a. Which drug (generic_name) had the highest total drug cost?
 SELECT
 	DISTINCT generic_name,
-	SUM(total_drug_cost) total_drug_cost
+	SUM(total_drug_cost)::MONEY total_drug_cost
 FROM prescription
 LEFT JOIN drug USING(drug_name)
 GROUP BY generic_name
@@ -158,7 +205,7 @@ LIMIT 1;
 -- -- -- 3b. Which drug (generic_name) has the hightest total cost per day? BONUS: ROUND YOUR COST PER DAY COLUMN TO 2 DECIMAL PLACES. GOOGLE ROUND TO SEE HOW THIS WORKS.
 SELECT
 	DISTINCT generic_name,
-	ROUND((SUM(total_drug_cost) / SUM(total_day_supply)), 2) AS cost_per_day
+	(SUM(total_drug_cost) / SUM(total_day_supply))::MONEY AS cost_per_day
 FROM prescription
 LEFT JOIN drug USING(drug_name)
 GROUP BY generic_name
@@ -181,14 +228,14 @@ FROM drug;
 
 -- -- -- 4b. Building off of the query you wrote for part a, determine whether more was spent (total_drug_cost) on opioids or on antibiotics. Hint: Format the total costs as MONEY for easier comparision.
 SELECT 
-	CAST(SUM(total_drug_cost) AS money) AS money_spent,
+	SUM(total_drug_cost)::MONEY AS money_spent,
 	CASE 
     	WHEN opioid_drug_flag = 'Y' THEN 'opioid'
         WHEN antibiotic_drug_flag = 'Y' THEN 'antibiotic'
         ELSE 'neither'
 	END AS drug_type
 FROM drug
-LEFT JOIN prescription USING(drug_name)
+JOIN prescription USING(drug_name)
 GROUP BY drug_type
 ORDER BY money_spent DESC;
 -- -- -- ANSWER opioid > antibiotic
@@ -196,15 +243,33 @@ ORDER BY money_spent DESC;
 -- -- -- "$105,080,626.37"	|"opioid"
 -- -- -- "$38,435,121.26"	|"antibiotic"
 
+-- Using CTE
+WITH new_drug_table AS (
+	SELECT drug_name,
+	CASE 
+		WHEN opioid_drug_flag = 'Y' THEN 'opioid'
+		WHEN antibiotic_drug_flag = 'Y' THEN 'antibiotic'
+		ELSE 'neither'
+		END AS drug_type,
+	total_drug_cost::money
+FROM drug
+LEFT JOIN prescription
+USING(drug_name)
+)
+SELECT 
+	SUM(CASE WHEN drug_type = 'opioid' THEN total_drug_cost END) AS opioid_total,
+	SUM(CASE WHEN drug_type = 'antibiotic' THEN total_drug_cost END) AS antibiotic_total
+FROM new_drug_table;
+
+
+
 -- -- -- 5a. How many CBSAs are in Tennessee? WARNING: The cbsa table contains information for all states, not just Tennessee.
 SELECT
-	state,
-	COUNT(cbsa) AS num_of_cbsas
+	COUNT(DISTINCT cbsa) AS num_of_cbsas
 FROM cbsa
 LEFT JOIN fips_county USING(fipscounty)
-WHERE state = 'TN'
-GROUP BY state;
--- -- -- ANSWER: 42
+WHERE state = 'TN';
+-- -- -- ANSWER: 10
 
 -- -- -- 5b. Which cbsa has the largest combined population? Which has the smallest? Report the CBSA name and total population.
 SELECT
@@ -234,12 +299,24 @@ LIMIT 1;
 -- -- --"county_name"|"population"
 -- -- --"SEVIER"	 |95523
 
+-- Using right join
+SELECT county, MAX(population) AS max_pop
+FROM cbsa
+RIGHT JOIN fips_county
+USING (fipscounty)
+INNER JOIN population
+USING (fipscounty)
+WHERE cbsa IS NULL
+GROUP BY county
+ORDER BY max_pop DESC;
+
 -- -- -- 6a. Find all rows in the prescription table where total_claims is at least 3000. Report the drug_name and the total_claim_count.
 SELECT 
 	drug_name,
 	total_claim_count
 FROM prescription
-WHERE total_claim_count > 3000;
+WHERE total_claim_count >= 3000
+ORDER BY total_claim_count DESC;
 -- -- -- ANSWER
 -- -- --"drug_name"				   |"total_claim_count"
 -- -- --"OXYCODONE HCL"			   |4538
@@ -262,7 +339,7 @@ SELECT
 	END AS is_opioid
 FROM prescription
 JOIN drug USING(drug_name)
-WHERE total_claim_count > 3000;
+WHERE total_claim_count >= 3000;
 -- -- -- ANSWER
 -- -- --"drug_name"					|"total_claim_count"|"is_opioid"
 -- -- --"OXYCODONE HCL"				|4538				|"true"
@@ -288,18 +365,9 @@ SELECT
 FROM prescription
 JOIN drug USING(drug_name)
 JOIN prescriber USING(npi)
-WHERE total_claim_count > 3000;
--- -- -- ANSWER
--- -- --"drug_name"					|"total_claim_count"|"is_opioid"|"nppes_provider_first_name"|"nppes_provider_last_org_name"
--- -- --"OXYCODONE HCL"				|4538				|"true"		|"DAVID"					|"COFFEY"
--- -- --"HYDROCODONE-ACETAMINOPHEN" |3376				|"true"		|"DAVID"					|"COFFEY"
--- -- --"LEVOTHYROXINE SODIUM"		|3101				|"false"	|"ERIC"						|"HASEMEIER"
--- -- --"GABAPENTIN"				|3531				|"false"	|"BRUCE"					|"PENDLEY"
--- -- --"MIRTAZAPINE"				|3085				|"false"	|"BRUCE"					|"PENDLEY"
--- -- --"LISINOPRIL"				|3655				|"false"	|"BRUCE"					|"PENDLEY"
--- -- --"FUROSEMIDE"				|3083				|"false"	|"MICHAEL"					|"COX"
--- -- --"LEVOTHYROXINE SODIUM"		|3023				|"false"	|"BRUCE"					|"PENDLEY"
--- -- --"LEVOTHYROXINE SODIUM"		|3138				|"false"	|"DEAVER"					|"SHATTUCK"
+WHERE total_claim_count >= 3000
+ORDER BY total_claim_count DESC;
+-- -- -- ANSWER: execute query above
 
 -- -- -- 7. The goal of this exercise is to generate a full list of all pain management specialists in Nashville and the number of claims they had for each opioid. HINT: The results from all 3 parts will have 637 rows.
 
@@ -316,15 +384,16 @@ WHERE specialty_description = 'Pain Management'
 -- -- -- ANSWER: execute query above
 
 -- -- -- 7b. Next, report the number of claims per drug per prescriber. Be sure to include all combinations, whether or not the prescriber had any claims. You should report the npi, the drug name, and the number of claims (total_claim_count).
-WITH sq AS(
-	SELECT
+WITH sq AS
+	(SELECT
 		npi,
 		drug_name
 	FROM prescriber
 	CROSS JOIN drug
 	WHERE specialty_description = 'Pain Management'
 			AND opioid_drug_flag = 'Y'
-			AND nppes_provider_city = 'NASHVILLE')
+			AND nppes_provider_city = 'NASHVILLE'
+	)
 SELECT
 	sq.npi,
 	sq.drug_name,
